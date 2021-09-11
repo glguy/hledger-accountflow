@@ -23,7 +23,8 @@ cmdMode = Cli.hledgerCommandMode
   "accountflow\n\
   \Pivot accounts on a flow tag.\n\
   \_FLAGS\n"
-  [Cli.flagReq ["tag"] (\x y -> Right (setopt "tag" x y)) "TAG" "Pivot tag (default: \"flow\")"]
+  [Cli.flagReq ["tag"] (\x y -> Right (setopt "tag" x y)) "TAG" "Pivot tag (default: \"flow\")"
+  ,Cli.flagNone ["total"] (setboolopt "total") "Show account totals"]
   [Cli.generalflagsgroup1]
   []
   ([], Just (Cli.argsFlag "[QUERY]"))
@@ -35,14 +36,14 @@ main =
      let rawopts = Cli.rawopts_ copts
          tag | Cli.inRawOpts "tag" rawopts = Text.pack (Cli.stringopt "tag" rawopts)
              | otherwise = "flow" 
-
+         total = Cli.boolopt "total" rawopts
      Cli.withJournalDo copts \journal ->
-       do let table = report tag (rsQuery (Cli.reportspec_ copts)) journal
+       do let table = report tag total (rsQuery (Cli.reportspec_ copts)) journal
           Text.putStrLn (render True id id (Text.pack . showMixedAmountOneLine) table)
 
 
-report :: TagName -> Query -> Journal -> Table Text Text MixedAmount
-report tag query journal
+report :: TagName -> Bool -> Query -> Journal -> Table Text Text MixedAmount
+report tag showTotal query journal
   | Map.null chk_ledger = table
   | otherwise = error ("Erroneous accounts: " ++ show (Map.keys chk_ledger))
   where
@@ -58,7 +59,7 @@ report tag query journal
         | val <- tags
         , let Right re = Regex.toRegex ("^" <> val <> "$")
         , let ledger = mk (And [query, tagQuery (Just re)])
-      ] ++ [mk query]
+      ] ++ [mk query | showTotal]
 
     accounts :: [[[Text]]]
     accounts = divideAccounts
@@ -72,7 +73,7 @@ report tag query journal
     table :: Table Text Text MixedAmount
     table = Table
               (rowHeaders accounts)
-              (columnHeaders tags)
+              (columnHeaders tags showTotal)
               [ Map.findWithDefault 0 a <$> columns
               | a <- concat accounts ]
 
@@ -105,10 +106,11 @@ nestAccount [x] = x
 nestAccount []  = ""
 nestAccount (_:xs) = "· " <> nestAccount xs
 
-columnHeaders :: [Text] -> Header Text
-columnHeaders tags =
-  Group DoubleLine
-    [Group SingleLine (Header <$> tags), Header "total"]
+columnHeaders :: [Text] -> Bool -> Header Text
+columnHeaders tags showTotal =
+  Group DoubleLine $
+    [Group SingleLine (Header <$> tags)] ++
+    [Header "total" | showTotal]
 
 divideAccounts :: [[Text]] -> [[[Text]]]
 divideAccounts = groupBy ((==) `on` length)
