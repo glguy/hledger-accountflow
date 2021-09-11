@@ -1,18 +1,14 @@
 {-# Language ScopedTypeVariables, BlockArguments, DeriveTraversable, OverloadedStrings, ImportQualifiedPost #-}
-{-# Options_GHC -Wno-unused-imports #-}
-{-# Options_GHC -w #-}
 module Main where
 
-import Data.Foldable
 import Data.Function (on)
-import Data.List (intercalate, intersperse, transpose, nub, groupBy)
+import Data.List (groupBy)
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Lazy.IO qualified as Text
-import Data.Traversable
 import Hledger
 import Hledger.Cli qualified as Cli
 import Hledger.Utils.Regex qualified as Regex
@@ -23,33 +19,45 @@ mkMap :: [Account] -> Map [Text] MixedAmount
 mkMap accts = Map.fromList [(Text.splitOn ":" (aname a), aibalance a) | a <- accts]
 
 cmdMode :: Cli.Mode RawOpts
-cmdMode = Cli.addonCommandMode "accountflow"
+cmdMode = Cli.hledgerCommandMode
+  "accountflow\n\
+  \Pivot accounts on a flow tag.\n\
+  \_FLAGS\n"
+  [Cli.flagReq ["tag"] (\x y -> Right (setopt "tag" x y)) "TAG" "Pivot tag (default: \"flow\")"]
+  [Cli.generalflagsgroup1]
+  []
+  ([], Just (Cli.argsFlag "[QUERY]"))
 
 main :: IO ()
 main =
   do copts <- Cli.getHledgerCliOpts cmdMode
+
+     let rawopts = Cli.rawopts_ copts
+         tag | Cli.inRawOpts "tag" rawopts = Text.pack (Cli.stringopt "tag" rawopts)
+             | otherwise = "flow" 
+
      Cli.withJournalDo copts \journal ->
-       do let table = report (rsQuery (Cli.reportspec_ copts)) journal
+       do let table = report tag (rsQuery (Cli.reportspec_ copts)) journal
           Text.putStrLn (render True id id (Text.pack . showMixedAmountOneLine) table)
 
 
-report :: Query -> Journal -> Table Text Text MixedAmount
-report query journal
+report :: TagName -> Query -> Journal -> Table Text Text MixedAmount
+report tag query journal
   | Map.null chk_ledger = table
   | otherwise = error ("Erroneous accounts: " ++ show (Map.keys chk_ledger))
   where
     mk q = mkMap (drop 1 (laccounts (ledgerFromJournal q journal)))
 
-    Right flowTag = Tag <$> Regex.toRegex "^flow$"
+    Right tagQuery = Tag <$> Regex.toRegex ("^" <> tag <> "$")
 
-    chk_ledger = mk (And [query, Not (flowTag Nothing)])
+    chk_ledger = mk (And [query, Not (tagQuery Nothing)])
 
     columns :: [Map [Text] MixedAmount]
     columns =
       [ ledger
-        | tag <- tags
-        , let Right re = Regex.toRegex ("^" <> tag <> "$")
-        , let ledger = mk (And [query, flowTag (Just re)])
+        | val <- tags
+        , let Right re = Regex.toRegex ("^" <> val <> "$")
+        , let ledger = mk (And [query, tagQuery (Just re)])
       ] ++ [mk query]
 
     accounts :: [[[Text]]]
@@ -59,7 +67,7 @@ report query journal
              $ map Map.keysSet columns
 
     tags :: [Text]
-    tags = flowTags journal
+    tags = tagValues tag journal
 
     table :: Table Text Text MixedAmount
     table = Table
@@ -68,15 +76,15 @@ report query journal
               [ Map.findWithDefault 0 a <$> columns
               | a <- concat accounts ]
 
-flowTags :: Journal -> [TagValue]
-flowTags journal =
+tagValues :: TagName -> Journal -> [TagValue]
+tagValues tag journal =
   Set.toList $ Set.fromList
   [ val
     | tx <- jtxns journal
     , px <- tpostings tx
-    , ("flow", val) <- ptags px
+    , (name, val) <- ptags px
+    , name == tag
   ]
-
 
 rowHeaders :: [[[Text]]] -> Header Text
 rowHeaders accounts =
@@ -100,7 +108,7 @@ nestAccount (_:xs) = "· " <> nestAccount xs
 columnHeaders :: [Text] -> Header Text
 columnHeaders tags =
   Group DoubleLine
-    [Group SingleLine (Header <$> tags), Header "bal"]
+    [Group SingleLine (Header <$> tags), Header "total"]
 
 divideAccounts :: [[Text]] -> [[[Text]]]
 divideAccounts = groupBy ((==) `on` length)
