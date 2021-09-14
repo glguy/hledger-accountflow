@@ -43,15 +43,11 @@ main =
 
 
 report :: TagName -> Bool -> Query -> Journal -> Table Text Text MixedAmount
-report tag showTotal query journal
-  | Map.null chk_ledger = table
-  | otherwise = error ("Erroneous accounts: " ++ show (Map.keys chk_ledger))
+report tag showTotal query journal = table
   where
     mk q = mkMap (drop 1 (laccounts (ledgerFromJournal q journal)))
 
     Right tagQuery = Tag <$> Regex.toRegex ("^" <> tag <> "$")
-
-    chk_ledger = mk (And [query, Not (tagQuery Nothing)])
 
     columns :: [Map [Text] MixedAmount]
     columns =
@@ -68,7 +64,7 @@ report tag showTotal query journal
              $ map Map.keysSet columns
 
     tags :: [Text]
-    tags = tagValues tag journal
+    tags = tagValues tag (ljournal (ledgerFromJournal query journal))
 
     table :: Table Text Text MixedAmount
     table = Table
